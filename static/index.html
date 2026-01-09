@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI-IDS | Intrusion Detection System</title>
+    <meta name="description" content="AI-Based Intrusion Detection System with ML-powered threat detection">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/dashboard.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="logo">
+                <div class="logo-icon">🛡️</div>
+                <span class="logo-text">AI-IDS</span>
+            </div>
+            <nav class="nav-menu">
+                <a href="#" class="nav-item active" data-page="dashboard">
+                    <span class="nav-icon">📊</span>
+                    <span>Dashboard</span>
+                </a>
+                <a href="#" class="nav-item" data-page="alerts">
+                    <span class="nav-icon">🚨</span>
+                    <span>Alerts</span>
+                    <span class="badge" id="alert-badge">0</span>
+                </a>
+                <a href="#" class="nav-item" data-page="mitre">
+                    <span class="nav-icon">🎯</span>
+                    <span>MITRE ATT&CK</span>
+                </a>
+                <a href="#" class="nav-item" data-page="analyze">
+                    <span class="nav-icon">🔍</span>
+                    <span>Analyze</span>
+                </a>
+                <a href="#" class="nav-item" data-page="models">
+                    <span class="nav-icon">🤖</span>
+                    <span>Models</span>
+                </a>
+            </nav>
+            <div class="sidebar-footer">
+                <div class="status-indicator">
+                    <span class="status-dot" id="system-status"></span>
+                    <span id="status-text">Checking...</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Header -->
+            <header class="header">
+                <div class="header-left">
+                    <h1 id="page-title">Dashboard</h1>
+                    <span class="header-subtitle">Real-time threat monitoring</span>
+                </div>
+                <div class="header-right">
+                    <button class="btn btn-secondary" id="refresh-btn">
+                        <span>↻</span> Refresh
+                    </button>
+                    <button class="btn btn-primary" id="train-btn">
+                        <span>⚡</span> Train Models
+                    </button>
+                </div>
+            </header>
+
+            <!-- Dashboard Page -->
+            <section id="page-dashboard" class="page active">
+                <!-- Stats Cards -->
+                <div class="stats-grid">
+                    <div class="stat-card critical">
+                        <div class="stat-icon">🔴</div>
+                        <div class="stat-content">
+                            <span class="stat-value" id="stat-critical">0</span>
+                            <span class="stat-label">Critical</span>
+                        </div>
+                    </div>
+                    <div class="stat-card high">
+                        <div class="stat-icon">🟠</div>
+                        <div class="stat-content">
+                            <span class="stat-value" id="stat-high">0</span>
+                            <span class="stat-label">High</span>
+                        </div>
+                    </div>
+                    <div class="stat-card medium">
+                        <div class="stat-icon">🟡</div>
+                        <div class="stat-content">
+                            <span class="stat-value" id="stat-medium">0</span>
+                            <span class="stat-label">Medium</span>
+                        </div>
+                    </div>
+                    <div class="stat-card low">
+                        <div class="stat-icon">🟢</div>
+                        <div class="stat-content">
+                            <span class="stat-value" id="stat-low">0</span>
+                            <span class="stat-label">Low</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Charts Row -->
+                <div class="charts-row">
+                    <div class="chart-card">
+                        <div class="card-header">
+                            <h3>Threat Distribution</h3>
+                        </div>
+                        <div class="card-body">
+                            <canvas id="attack-chart"></canvas>
+                        </div>
+                    </div>
+                    <div class="chart-card">
+                        <div class="card-header">
+                            <h3>Hourly Activity</h3>
+                        </div>
+                        <div class="card-body">
+                            <canvas id="hourly-chart"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Recent Alerts -->
+                <div class="alerts-card">
+                    <div class="card-header">
+                        <h3>Recent Alerts</h3>
+                        <a href="#" class="view-all" data-page="alerts">View All →</a>
+                    </div>
+                    <div class="card-body">
+                        <div class="alerts-table-wrapper">
+                            <table class="alerts-table">
+                                <thead>
+                                    <tr>
+                                        <th>Time</th>
+                                        <th>Severity</th>
+                                        <th>Attack Type</th>
+                                        <th>Source</th>
+                                        <th>Target</th>
+                                        <th>MITRE</th>
+                                        <th>Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="recent-alerts-body">
+                                    <tr class="empty-row">
+                                        <td colspan="7">No alerts yet. Train models and generate demo data to see alerts.</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Alerts Page -->
+            <section id="page-alerts" class="page">
+                <div class="page-header">
+                    <div class="filters">
+                        <select id="severity-filter" class="filter-select">
+                            <option value="">All Severities</option>
+                            <option value="Critical">Critical</option>
+                            <option value="High">High</option>
+                            <option value="Medium">Medium</option>
+                            <option value="Low">Low</option>
+                        </select>
+                        <select id="status-filter" class="filter-select">
+                            <option value="">All Statuses</option>
+                            <option value="new">New</option>
+                            <option value="investigating">Investigating</option>
+                            <option value="resolved">Resolved</option>
+                            <option value="false_positive">False Positive</option>
+                        </select>
+                        <button class="btn btn-secondary" id="generate-demo-btn">
+                            Generate Demo Alerts
+                        </button>
+                    </div>
+                </div>
+                <div class="alerts-card full-height">
+                    <div class="card-body">
+                        <div class="alerts-table-wrapper">
+                            <table class="alerts-table">
+                                <thead>
+                                    <tr>
+                                        <th>ID</th>
+                                        <th>Time</th>
+                                        <th>Severity</th>
+                                        <th>Attack Type</th>
+                                        <th>Source IP</th>
+                                        <th>Destination</th>
+                                        <th>Confidence</th>
+                                        <th>MITRE ID</th>
+                                        <th>Status</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="all-alerts-body">
+                                </tbody>
+                            </table>
+                        </div>
+                        <div class="pagination" id="alerts-pagination">
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- MITRE ATT&CK Page -->
+            <section id="page-mitre" class="page">
+                <div class="mitre-info">
+                    <div class="info-card">
+                        <h3>MITRE ATT&CK Framework</h3>
+                        <p>The MITRE ATT&CK framework provides a comprehensive knowledge base of adversary tactics and techniques. Detected attacks are mapped to specific techniques to help understand the attack methodology.</p>
+                    </div>
+                </div>
+                <div class="mitre-matrix-container">
+                    <div class="mitre-matrix" id="mitre-matrix">
+                        <!-- Matrix will be populated by JS -->
+                    </div>
+                </div>
+                <div class="technique-details" id="technique-details" style="display: none;">
+                    <div class="card-header">
+                        <h3 id="technique-name">Technique Details</h3>
+                        <button class="close-btn" id="close-technique">×</button>
+                    </div>
+                    <div class="card-body" id="technique-content">
+                    </div>
+                </div>
+            </section>
+
+            <!-- Analyze Page -->
+            <section id="page-analyze" class="page">
+                <div class="analyze-container">
+                    <div class="analyze-card">
+                        <div class="card-header">
+                            <h3>Analyze Network Traffic</h3>
+                        </div>
+                        <div class="card-body">
+                            <form id="analyze-form">
+                                <div class="form-grid">
+                                    <div class="form-group">
+                                        <label>Source IP</label>
+                                        <input type="text" id="src_ip" placeholder="192.168.1.100">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Destination IP</label>
+                                        <input type="text" id="dst_ip" placeholder="10.0.0.1">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Source Port</label>
+                                        <input type="number" id="src_port" placeholder="12345">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Destination Port</label>
+                                        <input type="number" id="dst_port" placeholder="80">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Flow Duration (μs)</label>
+                                        <input type="number" id="flow_duration" placeholder="1000000">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Total Fwd Packets</label>
+                                        <input type="number" id="total_fwd_packets" placeholder="10">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Total Bwd Packets</label>
+                                        <input type="number" id="total_bwd_packets" placeholder="8">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Flow Bytes/s</label>
+                                        <input type="number" id="flow_bytes_s" placeholder="5000">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Flow Packets/s</label>
+                                        <input type="number" id="flow_packets_s" placeholder="100">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>SYN Flag Count</label>
+                                        <input type="number" id="syn_flag_count" placeholder="1">
+                                    </div>
+                                </div>
+                                <button type="submit" class="btn btn-primary btn-lg">
+                                    <span>🔍</span> Analyze Traffic
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                    <div class="result-card" id="analysis-result" style="display: none;">
+                        <div class="card-header">
+                            <h3>Analysis Result</h3>
+                        </div>
+                        <div class="card-body" id="result-content">
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Models Page -->
+            <section id="page-models" class="page">
+                <div class="models-grid">
+                    <div class="model-card" id="model-rf">
+                        <div class="model-header">
+                            <div class="model-icon">🌲</div>
+                            <h3>Random Forest</h3>
+                        </div>
+                        <div class="model-body">
+                            <p class="model-type">Supervised Classification</p>
+                            <div class="model-stats" id="rf-stats">
+                                <span class="model-status not-loaded">Not Loaded</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="model-card" id="model-if">
+                        <div class="model-header">
+                            <div class="model-icon">🏝️</div>
+                            <h3>Isolation Forest</h3>
+                        </div>
+                        <div class="model-body">
+                            <p class="model-type">Anomaly Detection</p>
+                            <div class="model-stats" id="if-stats">
+                                <span class="model-status not-loaded">Not Loaded</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="model-card" id="model-ae">
+                        <div class="model-header">
+                            <div class="model-icon">🧠</div>
+                            <h3>Autoencoder</h3>
+                        </div>
+                        <div class="model-body">
+                            <p class="model-type">Deep Anomaly Detection</p>
+                            <div class="model-stats" id="ae-stats">
+                                <span class="model-status not-loaded">Not Loaded</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="training-card">
+                    <div class="card-header">
+                        <h3>Train Models</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="training-form">
+                            <div class="form-group">
+                                <label>Sample Size</label>
+                                <input type="number" id="training-samples" value="5000" min="1000" max="50000">
+                            </div>
+                            <button class="btn btn-primary btn-lg" id="start-training-btn">
+                                <span>🚀</span> Start Training
+                            </button>
+                        </div>
+                        <div class="training-log" id="training-log" style="display: none;">
+                            <pre id="log-content"></pre>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Alert Detail Modal -->
+    <div class="modal" id="alert-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Alert Details</h3>
+                <button class="close-btn" id="close-modal">×</button>
+            </div>
+            <div class="modal-body" id="alert-modal-body">
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/dashboard.js"></script>
+</body>
+</html>
