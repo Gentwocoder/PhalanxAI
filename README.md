@@ -95,7 +95,7 @@ PhalanxAI/
 
 1. **Clone the repository**
 ```bash
-git clone https://github.com/yourusername/phalanxai.git
+git clone https://github.com/Gentwocoder/PhalanxAI.git
 cd phalanxai
 ```
 
@@ -434,7 +434,7 @@ pylint models/ api/ data/
 ## 📧 Contact
 
 For questions, issues, or collaboration:
-- **GitHub Issues**: [Report a bug](https://github.com/Gentwocoder/phalanxai/issues)
+- **GitHub Issues**: [Report a bug](https://github.com/Gentwocoder/PhalanxAI/issues)
 - **Email**: adetoyeseoyekanmi@example.com
 
 ---
