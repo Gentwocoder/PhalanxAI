@@ -1,5 +1,5 @@
 """
-FastAPI routes for AI-IDS API.
+FastAPI routes for PhalanxAI API.
 """
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Query
 from fastapi.responses import JSONResponse

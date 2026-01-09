@@ -1,5 +1,5 @@
 """
-AI-Based Intrusion Detection System (AI-IDS)
+AI-Based Intrusion Detection System (PhalanxAI)
 
 A machine learning-powered intrusion detection system with:
 - Real-time network traffic analysis
@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Application lifespan manager for startup/shutdown."""
     # Startup
-    logger.info("Starting AI-IDS...")
+    logger.info("Starting PhalanxAI...")
     
     # Initialize database
     try:
@@ -53,18 +53,18 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Model loading skipped: {e}")
     
-    logger.info(f"AI-IDS v{settings.APP_VERSION} started on http://localhost:8000")
+    logger.info(f"PhalanxAI v{settings.APP_VERSION} started on http://localhost:8000")
     
     yield
     
     # Shutdown
-    logger.info("Shutting down AI-IDS...")
+    logger.info("Shutting down PhalanxAI...")
     await close_db()
 
 
 # Create FastAPI application
 app = FastAPI(
-    title="AI-IDS",
+    title="PhalanxAI",
     description="AI-Based Intrusion Detection System with ML-powered threat detection and MITRE ATT&CK mapping",
     version=settings.APP_VERSION,
     lifespan=lifespan
@@ -94,7 +94,7 @@ async def serve_dashboard():
     index_path = os.path.join(static_dir, "index.html")
     if os.path.exists(index_path):
         return FileResponse(index_path)
-    return {"message": "AI-IDS API is running. Visit /docs for API documentation."}
+    return {"message": "PhalanxAI API is running. Visit /docs for API documentation."}
 
 
 @app.get("/docs-info")

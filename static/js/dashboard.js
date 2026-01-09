@@ -1,5 +1,5 @@
 /**
- * AI-IDS Dashboard JavaScript
+ * PhalanxAI Dashboard JavaScript
  */
 
 // API base URL

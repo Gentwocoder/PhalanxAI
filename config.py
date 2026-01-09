@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     """Application settings with environment variable support."""
     
     # Application
-    APP_NAME: str = "AI-IDS"
+    APP_NAME: str = "PhalanxAI"
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = True
     
