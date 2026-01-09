@@ -2,7 +2,6 @@
 .env
 .env.local
 .env.production
-.env.example
 
 # Python
 __pycache__/
@@ -63,4 +62,3 @@ Thumbs.db
 *.pid
 instance/
 .webassets-cache
-.env.example
