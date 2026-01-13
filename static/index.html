@@ -8,16 +8,20 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="icon" type="image/png" href="/static/favicon.png">
     <link rel="stylesheet" href="/static/css/dashboard.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
     <div class="app-container">
+        <!-- Overlay -->
+        <div class="sidebar-overlay" id="sidebar-overlay"></div>
+        
         <!-- Sidebar -->
         <aside class="sidebar">
             <div class="logo">
-                <div class="logo-icon">🛡️</div>
-                <span class="logo-text">PhalanxAI</span>
+                <div class="logo-icon"><img src="/static/favicon.png" alt="PhalanxAI Logo"></div>
+                <span class="logo-text">Phalanx</span>
             </div>
             <nav class="nav-menu">
                 <a href="#" class="nav-item active" data-page="dashboard">
@@ -55,6 +59,9 @@
             <!-- Header -->
             <header class="header">
                 <div class="header-left">
+                    <button class="mobile-menu-toggle" id="sidebar-toggle" aria-label="Toggle Menu">
+                        <span>☰</span>
+                    </button>
                     <h1 id="page-title">Dashboard</h1>
                     <span class="header-subtitle">Real-time threat monitoring</span>
                 </div>
@@ -98,6 +105,49 @@
                         <div class="stat-content">
                             <span class="stat-value" id="stat-low">0</span>
                             <span class="stat-label">Low</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Real-Time Traffic Monitor -->
+                <div class="traffic-monitor">
+                    <div class="card-header">
+                        <h3>📡 Real-Time Network Traffic</h3>
+                        <div class="traffic-controls">
+                            <select id="interface-select" class="filter-select" style="min-width: 120px;">
+                                <option value="">Select Interface</option>
+                            </select>
+                            <button class="btn btn-primary btn-sm" id="start-monitor-btn">▶ Start Capture</button>
+                            <button class="btn btn-secondary btn-sm" id="stop-monitor-btn" style="display: none;">⏹ Stop</button>
+                            <span class="live-indicator" id="live-indicator">
+                                <span class="pulse"></span> <span id="monitor-status-text">SIMULATION</span>
+                            </span>
+                            <button class="btn btn-secondary btn-sm" id="toggle-stream-btn">Pause</button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <!-- Traffic Metrics -->
+                        <div class="traffic-metrics">
+                            <div class="traffic-metric">
+                                <span class="metric-value" id="metric-pps">0</span>
+                                <span class="metric-label">Packets/s</span>
+                            </div>
+                            <div class="traffic-metric">
+                                <span class="metric-value" id="metric-mbps">0</span>
+                                <span class="metric-label">Mbps</span>
+                            </div>
+                            <div class="traffic-metric">
+                                <span class="metric-value" id="metric-flows">0</span>
+                                <span class="metric-label">Flows/s</span>
+                            </div>
+                            <div class="traffic-metric threat">
+                                <span class="metric-value" id="metric-threat">0%</span>
+                                <span class="metric-label">Threat Level</span>
+                            </div>
+                        </div>
+                        <!-- Real-Time Graph -->
+                        <div class="traffic-chart-container">
+                            <canvas id="traffic-chart"></canvas>
                         </div>
                     </div>
                 </div>

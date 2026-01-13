@@ -10,7 +10,19 @@ let currentPage = 'dashboard';
 let alertsPage = 1;
 let attackChart = null;
 let hourlyChart = null;
+let trafficChart = null;
 let refreshInterval = null;
+
+// Real-time traffic state
+let trafficEventSource = null;
+let trafficData = {
+    labels: [],
+    pps: [],
+    benign: [],
+    malicious: []
+};
+let isStreamPaused = false;
+const MAX_DATA_POINTS = 60;
 
 /**
  * Initialize the dashboard
@@ -20,6 +32,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initEventListeners();
     checkHealth();
     loadDashboardData();
+    initTrafficStream();
     
     // Auto-refresh every 30 seconds
     refreshInterval = setInterval(() => {
@@ -123,6 +136,53 @@ function initEventListeners() {
     // Filters
     document.getElementById('severity-filter').addEventListener('change', loadAlerts);
     document.getElementById('status-filter').addEventListener('change', loadAlerts);
+    
+    // Traffic stream toggle
+    const toggleBtn = document.getElementById('toggle-stream-btn');
+    if (toggleBtn) {
+        toggleBtn.addEventListener('click', toggleTrafficStream);
+    }
+    
+    // Mobile Sidebar Toggle
+    const sidebarToggle = document.getElementById('sidebar-toggle');
+    const sidebar = document.querySelector('.sidebar');
+    const overlay = document.getElementById('sidebar-overlay');
+
+    if (sidebarToggle && sidebar && overlay) {
+        sidebarToggle.addEventListener('click', () => {
+            sidebar.classList.toggle('open');
+            overlay.classList.toggle('active');
+        });
+        
+        overlay.addEventListener('click', () => {
+            sidebar.classList.remove('open');
+            overlay.classList.remove('active');
+        });
+        
+        // Close sidebar when clicking a nav item on mobile
+        document.querySelectorAll('.nav-item').forEach(item => {
+            item.addEventListener('click', () => {
+                if (window.innerWidth <= 768) {
+                    sidebar.classList.remove('open');
+                    overlay.classList.remove('active');
+                }
+            });
+        });
+    }
+    
+    // Network monitor controls
+    const startMonitorBtn = document.getElementById('start-monitor-btn');
+    const stopMonitorBtn = document.getElementById('stop-monitor-btn');
+    
+    if (startMonitorBtn) {
+        startMonitorBtn.addEventListener('click', startNetworkMonitor);
+    }
+    if (stopMonitorBtn) {
+        stopMonitorBtn.addEventListener('click', stopNetworkMonitor);
+    }
+    
+    // Load available interfaces
+    loadNetworkInterfaces();
 }
 
 /**
@@ -772,3 +832,459 @@ function showNotification(message, type = 'info') {
 window.showAlertDetail = showAlertDetail;
 window.showTechnique = showTechnique;
 window.goToPage = goToPage;
+
+
+// ============ Real-Time Traffic Streaming ============
+
+/**
+ * Initialize real-time traffic stream
+ */
+function initTrafficStream() {
+    const canvas = document.getElementById('traffic-chart');
+    if (!canvas) return;
+    
+    // Initialize chart
+    const ctx = canvas.getContext('2d');
+    trafficChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: [],
+            datasets: [
+                {
+                    label: 'Packets/s',
+                    data: [],
+                    borderColor: 'rgba(99, 102, 241, 1)',
+                    backgroundColor: 'rgba(99, 102, 241, 0.1)',
+                    borderWidth: 2,
+                    fill: true,
+                    tension: 0.4,
+                    pointRadius: 0,
+                    yAxisID: 'y'
+                },
+                {
+                    label: 'Benign Flows',
+                    data: [],
+                    borderColor: 'rgba(34, 197, 94, 1)',
+                    backgroundColor: 'rgba(34, 197, 94, 0.1)',
+                    borderWidth: 2,
+                    fill: false,
+                    tension: 0.4,
+                    pointRadius: 0,
+                    yAxisID: 'y1'
+                },
+                {
+                    label: 'Malicious Flows',
+                    data: [],
+                    borderColor: 'rgba(239, 68, 68, 1)',
+                    backgroundColor: 'rgba(239, 68, 68, 0.3)',
+                    borderWidth: 2,
+                    fill: true,
+                    tension: 0.4,
+                    pointRadius: 0,
+                    yAxisID: 'y1'
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: {
+                duration: 300
+            },
+            interaction: {
+                intersect: false,
+                mode: 'index'
+            },
+            plugins: {
+                legend: {
+                    position: 'top',
+                    labels: {
+                        color: '#a0a0b0',
+                        font: { size: 11 },
+                        boxWidth: 12,
+                        padding: 16
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    grid: { display: false },
+                    ticks: { 
+                        color: '#6b6b7b',
+                        maxTicksLimit: 10,
+                        font: { size: 10 }
+                    }
+                },
+                y: {
+                    type: 'linear',
+                    display: true,
+                    position: 'left',
+                    grid: { color: 'rgba(255,255,255,0.05)' },
+                    ticks: { color: '#6b6b7b' },
+                    title: {
+                        display: true,
+                        text: 'Packets/s',
+                        color: '#6b6b7b'
+                    }
+                },
+                y1: {
+                    type: 'linear',
+                    display: true,
+                    position: 'right',
+                    grid: { drawOnChartArea: false },
+                    ticks: { color: '#6b6b7b' },
+                    title: {
+                        display: true,
+                        text: 'Flows',
+                        color: '#6b6b7b'
+                    }
+                }
+            }
+        }
+    });
+    
+    // Start SSE connection
+    connectTrafficStream();
+}
+
+/**
+ * Connect to SSE traffic stream
+ */
+function connectTrafficStream() {
+    if (trafficEventSource) {
+        trafficEventSource.close();
+    }
+    
+    // Use the unified monitor/stream endpoint (handles both real and simulated data)
+    trafficEventSource = new EventSource(`${API_BASE}/monitor/stream`);
+    
+    trafficEventSource.onmessage = (event) => {
+        if (isStreamPaused) return;
+        
+        try {
+            const data = JSON.parse(event.data);
+            updateTrafficMetrics(data);
+            updateTrafficChart(data);
+            
+            // Update status indicator based on whether it's simulation or real
+            const statusText = document.getElementById('monitor-status-text');
+            const indicator = document.getElementById('live-indicator');
+            
+            if (data.simulation) {
+                if (statusText) statusText.textContent = 'SIMULATION';
+                indicator?.classList.remove('capturing');
+            } else {
+                // Real data! Update UI accordingly
+                if (statusText && !statusText.textContent.includes('LIVE')) {
+                    statusText.textContent = 'LIVE';
+                }
+                indicator?.classList.add('capturing');
+            }
+            
+            // Flash on spike/attack
+            if (data.is_spike || data.malicious_flows > 5) {
+                flashTrafficMonitor();
+            }
+            
+            // Update alerts if new
+            if (data.new_alerts > 0) {
+                document.getElementById('alert-badge').textContent = data.total_alerts;
+                // Refresh alerts table
+                loadAlerts();
+            }
+            
+        } catch (e) {
+            console.error('Error parsing traffic data:', e);
+        }
+    };
+    
+    trafficEventSource.onerror = () => {
+        console.log('Traffic stream disconnected, reconnecting...');
+        setTimeout(connectTrafficStream, 3000);
+    };
+}
+
+/**
+ * Update traffic metrics display
+ */
+function updateTrafficMetrics(data) {
+    const ppsEl = document.getElementById('metric-pps');
+    const mbpsEl = document.getElementById('metric-mbps');
+    const flowsEl = document.getElementById('metric-flows');
+    const threatEl = document.getElementById('metric-threat');
+    
+    if (ppsEl) ppsEl.textContent = formatNumber(data.packets_per_second);
+    if (mbpsEl) mbpsEl.textContent = data.mbps.toFixed(1);
+    if (flowsEl) flowsEl.textContent = data.total_flows;
+    if (threatEl) threatEl.textContent = data.malicious_percentage.toFixed(1) + '%';
+}
+
+/**
+ * Update real-time traffic chart
+ */
+function updateTrafficChart(data) {
+    if (!trafficChart) return;
+    
+    const time = new Date(data.timestamp).toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+    });
+    
+    // Add new data points
+    trafficData.labels.push(time);
+    trafficData.pps.push(data.packets_per_second);
+    trafficData.benign.push(data.benign_flows);
+    trafficData.malicious.push(data.malicious_flows);
+    
+    // Trim to MAX_DATA_POINTS
+    if (trafficData.labels.length > MAX_DATA_POINTS) {
+        trafficData.labels.shift();
+        trafficData.pps.shift();
+        trafficData.benign.shift();
+        trafficData.malicious.shift();
+    }
+    
+    // Update chart
+    trafficChart.data.labels = trafficData.labels;
+    trafficChart.data.datasets[0].data = trafficData.pps;
+    trafficChart.data.datasets[1].data = trafficData.benign;
+    trafficChart.data.datasets[2].data = trafficData.malicious;
+    trafficChart.update('none');
+}
+
+/**
+ * Toggle traffic stream pause/resume
+ */
+function toggleTrafficStream() {
+    isStreamPaused = !isStreamPaused;
+    
+    const btn = document.getElementById('toggle-stream-btn');
+    const indicator = document.getElementById('live-indicator');
+    
+    if (isStreamPaused) {
+        btn.textContent = 'Resume';
+        indicator.classList.add('paused');
+        indicator.querySelector('.pulse').nextSibling.textContent = ' PAUSED';
+    } else {
+        btn.textContent = 'Pause';
+        indicator.classList.remove('paused');
+        indicator.querySelector('.pulse').nextSibling.textContent = ' LIVE';
+    }
+}
+
+/**
+ * Flash traffic monitor on spike/attack
+ */
+function flashTrafficMonitor() {
+    const monitor = document.querySelector('.traffic-monitor');
+    if (monitor) {
+        monitor.classList.add('spike');
+        setTimeout(() => monitor.classList.remove('spike'), 500);
+    }
+}
+
+/**
+ * Format large numbers with K/M suffix
+ */
+function formatNumber(num) {
+    if (num >= 1000000) {
+        return (num / 1000000).toFixed(1) + 'M';
+    }
+    if (num >= 1000) {
+        return (num / 1000).toFixed(1) + 'K';
+    }
+    return num.toString();
+}
+
+// Cleanup on page unload
+window.addEventListener('beforeunload', () => {
+    if (trafficEventSource) {
+        trafficEventSource.close();
+    }
+});
+
+
+// ============ Network Monitor Controls ============
+
+let monitorRunning = false;
+
+/**
+ * Load available network interfaces
+ */
+async function loadNetworkInterfaces() {
+    try {
+        const response = await fetch(`${API_BASE}/monitor/interfaces`);
+        const data = await response.json();
+        
+        const select = document.getElementById('interface-select');
+        if (!select) {
+            console.log('Interface select element not found');
+            return;
+        }
+        
+        console.log('Loading interfaces:', data);
+        
+        if (data.available && data.interfaces && data.interfaces.length > 0) {
+            select.innerHTML = '<option value="">Select Interface</option>';
+            
+            // Add primary interfaces first (eth, wlan, en)
+            const primary = data.interfaces.filter(iface => 
+                iface.startsWith('eth') || iface.startsWith('wlan') || 
+                iface.startsWith('en') || iface.startsWith('wl')
+            );
+            
+            primary.forEach(iface => {
+                select.innerHTML += `<option value="${iface}">${iface}</option>`;
+            });
+            
+            // Add separator if we have primary interfaces
+            if (primary.length > 0) {
+                select.innerHTML += '<option value="" disabled>──────────</option>';
+            }
+            
+            // Add other interfaces
+            data.interfaces.forEach(iface => {
+                if (!primary.includes(iface)) {
+                    select.innerHTML += `<option value="${iface}">${iface}</option>`;
+                }
+            });
+            
+            console.log('Interfaces loaded successfully');
+        } else {
+            select.innerHTML = '<option value="">No interfaces available</option>';
+            select.disabled = true;
+            const startBtn = document.getElementById('start-monitor-btn');
+            if (startBtn) startBtn.disabled = true;
+            console.log('No interfaces available or capture not supported');
+        }
+        
+        // Check if monitor is already running
+        checkMonitorStatus();
+        
+    } catch (error) {
+        console.error('Error loading interfaces:', error);
+        const select = document.getElementById('interface-select');
+        if (select) {
+            select.innerHTML = '<option value="">Error loading</option>';
+        }
+    }
+}
+
+/**
+ * Check current monitor status
+ */
+async function checkMonitorStatus() {
+    try {
+        const response = await fetch(`${API_BASE}/monitor/status`);
+        const data = await response.json();
+        
+        if (data.running) {
+            monitorRunning = true;
+            updateMonitorUI(true, data.interface);
+        }
+    } catch (error) {
+        console.error('Error checking monitor status:', error);
+    }
+}
+
+/**
+ * Start network monitoring
+ */
+async function startNetworkMonitor() {
+    const interfaceSelect = document.getElementById('interface-select');
+    const selectedInterface = interfaceSelect.value;
+    
+    if (!selectedInterface) {
+        showNotification('Please select a network interface', 'warning');
+        return;
+    }
+    
+    showNotification(`Starting capture on ${selectedInterface}...`, 'info');
+    
+    try {
+        const response = await fetch(`${API_BASE}/monitor/start?interface=${selectedInterface}`, {
+            method: 'POST'
+        });
+        
+        const data = await response.json();
+        
+        if (response.ok) {
+            monitorRunning = true;
+            
+            // Reset pause state so graph updates
+            isStreamPaused = false;
+            const toggleBtn = document.getElementById('toggle-stream-btn');
+            if (toggleBtn) toggleBtn.textContent = 'Pause';
+            
+            updateMonitorUI(true, data.interface);
+            showNotification(`Network monitoring started on ${data.interface}`, 'success');
+            
+            // Reconnect to real stream
+            if (trafficEventSource) {
+                trafficEventSource.close();
+            }
+            connectTrafficStream();
+        } else {
+            if (response.status === 403) {
+                showNotification('Permission denied. Run server with sudo for packet capture.', 'error');
+            } else {
+                showNotification(data.detail || 'Failed to start monitoring', 'error');
+            }
+        }
+    } catch (error) {
+        console.error('Error starting monitor:', error);
+        showNotification('Failed to start network monitoring', 'error');
+    }
+}
+
+/**
+ * Stop network monitoring
+ */
+async function stopNetworkMonitor() {
+    showNotification('Stopping network capture...', 'info');
+    
+    try {
+        const response = await fetch(`${API_BASE}/monitor/stop`, {
+            method: 'POST'
+        });
+        
+        const data = await response.json();
+        
+        monitorRunning = false;
+        updateMonitorUI(false);
+        showNotification('Network monitoring stopped', 'success');
+        
+    } catch (error) {
+        console.error('Error stopping monitor:', error);
+        showNotification('Failed to stop monitoring', 'error');
+    }
+}
+
+/**
+ * Update monitor UI state
+ */
+function updateMonitorUI(running, interfaceName = null) {
+    const startBtn = document.getElementById('start-monitor-btn');
+    const stopBtn = document.getElementById('stop-monitor-btn');
+    const interfaceSelect = document.getElementById('interface-select');
+    const statusText = document.getElementById('monitor-status-text');
+    const indicator = document.getElementById('live-indicator');
+    
+    if (running) {
+        startBtn.style.display = 'none';
+        stopBtn.style.display = 'inline-flex';
+        interfaceSelect.disabled = true;
+        statusText.textContent = `LIVE (${interfaceName || 'capturing'})`;
+        indicator.classList.remove('paused');
+        indicator.classList.add('capturing');
+    } else {
+        startBtn.style.display = 'inline-flex';
+        stopBtn.style.display = 'none';
+        interfaceSelect.disabled = false;
+        statusText.textContent = 'SIMULATION';
+        indicator.classList.remove('capturing');
+    }
+}
+
+
