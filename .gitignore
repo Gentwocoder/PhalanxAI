@@ -3,6 +3,9 @@
 .env.local
 .env.production
 
+Dataset/
+
+thingstodo.txt
 # Python
 __pycache__/
 *.py[cod]
@@ -62,3 +65,5 @@ Thumbs.db
 *.pid
 instance/
 .webassets-cache
+
+.ai

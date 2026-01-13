@@ -200,10 +200,67 @@ async def train_models(
             logger.info(f"Generating sample data with {request.sample_size} samples")
             df = load_sample_data(n_samples=request.sample_size)
         else:
-            raise HTTPException(
-                status_code=400, 
-                detail="Custom dataset loading not implemented. Use sample data."
-            )
+            # Load CICIDS2017 dataset from Dataset folder
+            import pandas as pd
+            from pathlib import Path
+            
+            dataset_dir = Path("Dataset")
+            if not dataset_dir.exists():
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Dataset folder not found. Please create a 'Dataset' folder with CICIDS2017 CSV files."
+                )
+            
+            csv_files = list(dataset_dir.glob("*.csv"))
+            if not csv_files:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No CSV files found in Dataset folder."
+                )
+            
+            logger.info(f"Loading {len(csv_files)} CSV files from Dataset folder")
+            
+            dfs = []
+            for csv_file in csv_files:
+                logger.info(f"Loading {csv_file.name}...")
+                try:
+                    chunk_df = pd.read_csv(csv_file, encoding='utf-8', low_memory=False)
+                    chunk_df.columns = chunk_df.columns.str.strip()
+                    dfs.append(chunk_df)
+                except Exception as e:
+                    logger.warning(f"Error loading {csv_file.name}: {e}")
+            
+            if not dfs:
+                raise HTTPException(status_code=400, detail="Failed to load any CSV files.")
+            
+            df = pd.concat(dfs, ignore_index=True)
+            logger.info(f"Loaded {len(df)} total samples")
+            
+            # Clean the Label column
+            if 'Label' in df.columns:
+                df['Label'] = df['Label'].str.strip()
+            elif ' Label' in df.columns:
+                df['Label'] = df[' Label'].str.strip()
+                df = df.drop(columns=[' Label'])
+            
+            # Sample if dataset is too large (for faster training)
+            max_samples = request.sample_size or 100000
+            if len(df) > max_samples:
+                logger.info(f"Sampling {max_samples} rows for training efficiency")
+                # Stratified sampling to maintain class distribution
+                df = df.groupby('Label', group_keys=False).apply(
+                    lambda x: x.sample(min(len(x), max(1, int(max_samples * len(x) / len(df)))),
+                                      random_state=42)
+                ).reset_index(drop=True)
+            
+            # Handle inf and NaN values
+            df = df.replace([np.inf, -np.inf], np.nan)
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            for col in numeric_cols:
+                df[col] = df[col].fillna(df[col].median() if df[col].notna().any() else 0)
+            
+            logger.info(f"Final dataset: {len(df)} samples, {df['Label'].nunique()} classes")
+            logger.info(f"Class distribution:\n{df['Label'].value_counts()}")
         
         # Preprocess data
         preprocessor = DataPreprocessor(feature_columns=settings.FEATURE_COLUMNS)
@@ -227,11 +284,13 @@ async def train_models(
         
         return TrainResponse(
             success=True,
-            message="All models trained successfully",
+            message=f"All models trained successfully on {len(df)} samples",
             metrics=metrics,
             training_time_seconds=training_time
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Training error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
