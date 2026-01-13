@@ -2,12 +2,16 @@
 FastAPI routes for PhalanxAI API.
 """
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from typing import List, Optional
 from datetime import datetime, timedelta
+from collections import deque
+import asyncio
 import logging
 import time
+import json
 import numpy as np
+import threading
 
 from .schemas import (
     NetworkFlowInput, PredictionResponse, AlertResponse, AlertListResponse,
@@ -20,6 +24,14 @@ from data import DataPreprocessor, load_sample_data
 from explainability import AlertGenerator
 from mitre import AttackMapper
 
+# Try to import network monitor (requires scapy)
+try:
+    from capture import NetworkMonitor
+    CAPTURE_AVAILABLE = True
+except ImportError:
+    CAPTURE_AVAILABLE = False
+    NetworkMonitor = None
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["IDS API"])
@@ -29,10 +41,20 @@ model_manager: Optional[ModelManager] = None
 preprocessor: Optional[DataPreprocessor] = None
 alert_generator: Optional[AlertGenerator] = None
 attack_mapper: Optional[AttackMapper] = None
+network_monitor: Optional["NetworkMonitor"] = None
 
 # In-memory alert storage (for demo - in production use database)
 alerts_store: List[dict] = []
 alert_id_counter = 0
+
+# Real-time traffic metrics (last 60 seconds)
+traffic_metrics = deque(maxlen=60)
+traffic_lock = asyncio.Lock()
+
+# Real network monitoring state
+monitor_traffic_queue = asyncio.Queue(maxsize=100)
+
+
 
 
 def get_model_manager() -> ModelManager:
@@ -534,3 +556,430 @@ async def generate_demo_alerts(
             generated += 1
     
     return {"message": f"Generated {generated} demo alerts", "total_alerts": len(alerts_store)}
+
+
+# ============ Real-Time Traffic Streaming ============
+
+async def generate_traffic_stream():
+    """
+    SSE generator for real-time traffic data.
+    Simulates network traffic with occasional attacks.
+    """
+    mm = get_model_manager()
+    am = get_attack_mapper()
+    ag = get_alert_generator()
+    
+    global alerts_store, alert_id_counter
+    
+    while True:
+        try:
+            # Simulate traffic metrics
+            timestamp = datetime.utcnow().isoformat()
+            
+            # Base traffic with some randomness (packets per second)
+            base_pps = np.random.normal(1500, 300)
+            base_bps = base_pps * np.random.normal(800, 200)  # bytes per second
+            
+            # Simulate occasional spikes (potential attacks)
+            is_spike = np.random.random() < 0.08  # 8% chance of spike
+            if is_spike:
+                spike_multiplier = np.random.uniform(2, 5)
+                base_pps *= spike_multiplier
+                base_bps *= spike_multiplier
+            
+            # Traffic classification
+            benign_pct = np.random.uniform(0.85, 0.99) if not is_spike else np.random.uniform(0.4, 0.7)
+            malicious_pct = 1 - benign_pct
+            
+            # Count by type
+            total_flows = int(np.random.uniform(50, 150))
+            benign_flows = int(total_flows * benign_pct)
+            malicious_flows = total_flows - benign_flows
+            
+            # Detect attack type if malicious traffic
+            attack_types = {}
+            new_alerts = 0
+            
+            if malicious_flows > 0 and mm.is_loaded:
+                # Simulate detection
+                attack_options = ['DDoS', 'PortScan', 'DoS Hulk', 'SSH-Patator', 'Bot']
+                for _ in range(malicious_flows):
+                    attack = np.random.choice(attack_options)
+                    attack_types[attack] = attack_types.get(attack, 0) + 1
+                    
+                    # Generate alert for some
+                    if np.random.random() < 0.3:
+                        alert_id_counter += 1
+                        alert = {
+                            'id': alert_id_counter,
+                            'timestamp': timestamp,
+                            'attack_type': attack,
+                            'severity': np.random.choice(['Critical', 'High', 'Medium']),
+                            'confidence': np.random.uniform(0.6, 0.95),
+                            'src_ip': f"192.168.{np.random.randint(1,255)}.{np.random.randint(1,255)}",
+                            'dst_ip': f"10.0.0.{np.random.randint(1,255)}",
+                            'src_port': np.random.randint(1024, 65535),
+                            'dst_port': np.random.choice([22, 80, 443, 3306, 8080]),
+                            'summary': f"{attack} detected",
+                            'status': 'new'
+                        }
+                        alerts_store.append(alert)
+                        new_alerts += 1
+                        
+                        # Keep only last 1000
+                        if len(alerts_store) > 1000:
+                            alerts_store = alerts_store[-1000:]
+            
+            # Traffic data point
+            data = {
+                'timestamp': timestamp,
+                'packets_per_second': max(0, int(base_pps)),
+                'bytes_per_second': max(0, int(base_bps)),
+                'mbps': round(max(0, base_bps * 8 / 1_000_000), 2),
+                'total_flows': total_flows,
+                'benign_flows': benign_flows,
+                'malicious_flows': malicious_flows,
+                'benign_percentage': round(benign_pct * 100, 1),
+                'malicious_percentage': round(malicious_pct * 100, 1),
+                'is_spike': is_spike,
+                'attack_types': attack_types,
+                'new_alerts': new_alerts,
+                'total_alerts': len(alerts_store)
+            }
+            
+            # Store in metrics
+            async with traffic_lock:
+                traffic_metrics.append(data)
+            
+            # Send SSE event
+            yield f"data: {json.dumps(data)}\n\n"
+            
+            # Wait before next update (1 second intervals)
+            await asyncio.sleep(1)
+            
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"Traffic stream error: {e}")
+            await asyncio.sleep(1)
+
+
+@router.get("/traffic/stream")
+async def stream_traffic():
+    """
+    Server-Sent Events endpoint for real-time traffic data.
+    Connect to this endpoint to receive live traffic updates every second.
+    """
+    return StreamingResponse(
+        generate_traffic_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"  # Disable nginx buffering
+        }
+    )
+
+
+@router.get("/traffic/history")
+async def get_traffic_history():
+    """Get the last 60 seconds of traffic data."""
+    async with traffic_lock:
+        return {
+            "history": list(traffic_metrics),
+            "count": len(traffic_metrics)
+        }
+
+
+@router.get("/traffic/summary")
+async def get_traffic_summary():
+    """Get current traffic summary."""
+    async with traffic_lock:
+        if not traffic_metrics:
+            return {
+                "avg_pps": 0,
+                "avg_bps": 0,
+                "avg_mbps": 0,
+                "total_flows_1min": 0,
+                "malicious_flows_1min": 0,
+                "threat_percentage": 0
+            }
+        
+        recent = list(traffic_metrics)
+        
+        return {
+            "avg_pps": int(np.mean([m['packets_per_second'] for m in recent])),
+            "avg_bps": int(np.mean([m['bytes_per_second'] for m in recent])),
+            "avg_mbps": round(np.mean([m['mbps'] for m in recent]), 2),
+            "total_flows_1min": sum([m['total_flows'] for m in recent]),
+            "malicious_flows_1min": sum([m['malicious_flows'] for m in recent]),
+            "threat_percentage": round(
+                sum([m['malicious_flows'] for m in recent]) / 
+                max(1, sum([m['total_flows'] for m in recent])) * 100, 1
+            )
+        }
+
+
+# ============ Real Network Monitoring ============
+
+# Thread-safe lock for alerts
+_alerts_lock = threading.Lock()
+
+def _on_monitor_alert(alert: dict):
+    """Callback when network monitor detects a threat."""
+    global alerts_store, alert_id_counter
+    with _alerts_lock:
+        alert_id_counter += 1
+        alert['id'] = alert_id_counter
+        alerts_store.append(alert)
+        if len(alerts_store) > 1000:
+            alerts_store = alerts_store[-1000:]
+
+
+def _on_monitor_traffic(traffic_data: dict):
+    """Callback for real-time traffic updates."""
+    try:
+        asyncio.get_event_loop().call_soon_threadsafe(
+            lambda: traffic_metrics.append(traffic_data)
+        )
+    except:
+        traffic_metrics.append(traffic_data)
+
+
+@router.get("/monitor/interfaces")
+async def list_network_interfaces():
+    """List available network interfaces for monitoring."""
+    if not CAPTURE_AVAILABLE:
+        return {
+            "available": False,
+            "message": "Network capture not available. Install scapy: pip install scapy",
+            "interfaces": []
+        }
+    
+    try:
+        interfaces = NetworkMonitor.list_interfaces()
+        return {
+            "available": True,
+            "interfaces": interfaces,
+            "message": "Select an interface to start monitoring"
+        }
+    except Exception as e:
+        return {
+            "available": False,
+            "message": str(e),
+            "interfaces": []
+        }
+
+
+@router.post("/monitor/start")
+async def start_network_monitor(
+    interface: Optional[str] = Query(None, description="Network interface to monitor"),
+    mm: ModelManager = Depends(get_model_manager),
+    ag: AlertGenerator = Depends(get_alert_generator),
+    am: AttackMapper = Depends(get_attack_mapper)
+):
+    """
+    Start real-time network monitoring.
+    Requires root/admin privileges for packet capture.
+    """
+    global network_monitor
+    
+    if not CAPTURE_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="Network capture not available. Install scapy: pip install scapy"
+        )
+    
+    if not mm.is_loaded:
+        raise HTTPException(
+            status_code=503,
+            detail="Models not loaded. Train models first using /api/train"
+        )
+    
+    if network_monitor and network_monitor.is_running:
+        return {
+            "status": "already_running",
+            "message": f"Monitor already running on interface: {network_monitor.capture.interface}",
+            "interface": network_monitor.capture.interface
+        }
+    
+    try:
+        # Create network monitor
+        network_monitor = NetworkMonitor(
+            interface=interface,
+            model_manager=mm,
+            alert_generator=ag,
+            attack_mapper=am,
+            feature_columns=settings.FEATURE_COLUMNS,
+            on_alert=_on_monitor_alert,
+            on_traffic_update=_on_monitor_traffic
+        )
+        
+        # Start monitoring
+        success = network_monitor.start()
+        
+        if success:
+            return {
+                "status": "started",
+                "message": f"Network monitoring started on interface: {network_monitor.capture.interface}",
+                "interface": network_monitor.capture.interface
+            }
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to start network monitoring"
+            )
+            
+    except PermissionError:
+        raise HTTPException(
+            status_code=403,
+            detail="Permission denied. Run with sudo/admin privileges for packet capture."
+        )
+    except Exception as e:
+        logger.error(f"Error starting network monitor: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/monitor/stop")
+async def stop_network_monitor():
+    """Stop real-time network monitoring."""
+    global network_monitor
+    
+    if not network_monitor or not network_monitor.is_running:
+        return {
+            "status": "not_running",
+            "message": "Network monitor is not running"
+        }
+    
+    try:
+        network_monitor.stop()
+        return {
+            "status": "stopped",
+            "message": "Network monitoring stopped",
+            "stats": network_monitor.get_stats()
+        }
+    except Exception as e:
+        logger.error(f"Error stopping network monitor: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/monitor/status")
+async def get_monitor_status():
+    """Get current network monitor status."""
+    global network_monitor
+    
+    if not CAPTURE_AVAILABLE:
+        return {
+            "available": False,
+            "running": False,
+            "message": "Network capture not available. Install scapy: pip install scapy"
+        }
+    
+    if not network_monitor:
+        return {
+            "available": True,
+            "running": False,
+            "message": "Monitor not initialized. Start with /api/monitor/start"
+        }
+    
+    return {
+        "available": True,
+        "running": network_monitor.is_running,
+        "interface": network_monitor.capture.interface if network_monitor.capture else None,
+        "stats": network_monitor.get_stats() if network_monitor.is_running else None
+    }
+
+
+@router.get("/monitor/stream")
+async def stream_real_traffic():
+    """
+    Server-Sent Events endpoint for REAL network traffic.
+    Streams actual captured traffic when monitor is running.
+    Falls back to simulation if monitor is not running.
+    """
+    global network_monitor
+    
+    async def generate():
+        while True:
+            try:
+                if network_monitor and network_monitor.is_running:
+                    # Get real traffic data
+                    history = network_monitor.get_recent_traffic()
+                    if history:
+                        data = history[-1]  # Most recent
+                    else:
+                        data = {
+                            'timestamp': datetime.utcnow().isoformat(),
+                            'packets_per_second': 0,
+                            'bytes_per_second': 0,
+                            'mbps': 0,
+                            'total_flows': 0,
+                            'benign_flows': 0,
+                            'malicious_flows': 0,
+                            'benign_percentage': 100,
+                            'malicious_percentage': 0,
+                            'is_spike': False,
+                            'new_alerts': 0,
+                            'total_alerts': len(alerts_store),
+                            'attack_types': {}
+                        }
+                else:
+                    # Fallback to simulation when monitor not running
+                    data = await _generate_simulated_traffic()
+                
+                yield f"data: {json.dumps(data)}\n\n"
+                await asyncio.sleep(1)
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Stream error: {e}")
+                await asyncio.sleep(1)
+    
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+
+async def _generate_simulated_traffic():
+    """Generate simulated traffic data when real monitoring is not active."""
+    timestamp = datetime.utcnow().isoformat()
+    
+    # Simulated traffic with occasional spikes
+    base_pps = np.random.normal(1500, 300)
+    base_bps = base_pps * np.random.normal(800, 200)
+    
+    is_spike = np.random.random() < 0.08
+    if is_spike:
+        base_pps *= np.random.uniform(2, 5)
+        base_bps *= np.random.uniform(2, 5)
+    
+    benign_pct = np.random.uniform(0.85, 0.99) if not is_spike else np.random.uniform(0.4, 0.7)
+    total_flows = int(np.random.uniform(50, 150))
+    benign_flows = int(total_flows * benign_pct)
+    malicious_flows = total_flows - benign_flows
+    
+    return {
+        'timestamp': timestamp,
+        'packets_per_second': max(0, int(base_pps)),
+        'bytes_per_second': max(0, int(base_bps)),
+        'mbps': round(max(0, base_bps * 8 / 1_000_000), 2),
+        'total_flows': total_flows,
+        'benign_flows': benign_flows,
+        'malicious_flows': malicious_flows,
+        'benign_percentage': round(benign_pct * 100, 1),
+        'malicious_percentage': round((1 - benign_pct) * 100, 1),
+        'is_spike': is_spike,
+        'attack_types': {},
+        'new_alerts': 0,
+        'total_alerts': len(alerts_store),
+        'simulation': True  # Flag to indicate simulated data
+    }
+
+
