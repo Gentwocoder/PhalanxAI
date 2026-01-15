@@ -12,6 +12,8 @@ import time
 import json
 import numpy as np
 import threading
+import pandas as pd
+import io
 
 from .schemas import (
     NetworkFlowInput, PredictionResponse, AlertResponse, AlertListResponse,
@@ -318,58 +320,72 @@ async def train_models(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/alerts", response_model=AlertListResponse)
+@router.get("/alerts")
 async def get_alerts(
     page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
+    page_size: int = Query(10, ge=1, le=100),
     severity: Optional[str] = None,
-    attack_type: Optional[str] = None
+    status: Optional[str] = None
 ):
-    """
-    Get list of alerts with pagination and filtering.
-    """
-    filtered = alerts_store.copy()
+    """Get list of generated alerts."""
+    filtered_alerts = alerts_store
     
-    # Apply filters
     if severity:
-        filtered = [a for a in filtered if a.get('severity') == severity]
-    if attack_type:
-        filtered = [a for a in filtered if a.get('attack_type') == attack_type]
+        filtered_alerts = [a for a in filtered_alerts if a['severity'].lower() == severity.lower()]
+        
+    if status:
+        filtered_alerts = [a for a in filtered_alerts if a['status'].lower() == status.lower()]
     
-    # Sort by timestamp descending
-    filtered.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+    # Sort by timestamp descending (newest first)
+    filtered_alerts = sorted(filtered_alerts, key=lambda x: x['timestamp'], reverse=True)
     
-    # Paginate
-    total = len(filtered)
+    total = len(filtered_alerts)
     start = (page - 1) * page_size
     end = start + page_size
-    page_alerts = filtered[start:end]
+    return {
+        "alerts": filtered_alerts[start:end],
+        "total": total,
+        "page": page,
+        "page_size": page_size
+    }
+
+
+@router.get("/alerts/export")
+async def export_alerts():
+    """Download all alerts as CSV."""
+    if not alerts_store:
+        raise HTTPException(
+            status_code=404,
+            detail="No alerts to export"
+        )
+        
+    # Convert alerts to DataFrame
+    df = pd.DataFrame(alerts_store)
     
-    # Convert to response format
-    alert_responses = []
-    for a in page_alerts:
-        alert_responses.append(AlertResponse(
-            id=a.get('id', 0),
-            timestamp=datetime.fromisoformat(a['timestamp']),
-            attack_type=a.get('attack_type', 'Unknown'),
-            severity=a.get('severity', 'Low'),
-            confidence=a.get('confidence', 0),
-            src_ip=a.get('src_ip'),
-            dst_ip=a.get('dst_ip'),
-            src_port=a.get('src_port'),
-            dst_port=a.get('dst_port'),
-            summary=a.get('summary', ''),
-            status=a.get('status', 'new'),
-            mitre_technique_id=a.get('mitre', {}).get('primary_technique', {}).get('technique_id') if a.get('mitre') else None,
-            mitre_technique_name=a.get('mitre', {}).get('primary_technique', {}).get('name') if a.get('mitre') else None
-        ))
+    # Select and reorder columns for better readability
+    columns = ['id', 'timestamp', 'attack_type', 'severity', 'confidence', 
+               'src_ip', 'dst_ip', 'dst_port', 'summary']
     
-    return AlertListResponse(
-        total=total,
-        page=page,
-        page_size=page_size,
-        alerts=alert_responses
-    )
+    # Filter columns that exist
+    cls = [c for c in columns if c in df.columns]
+    df = df[cls]
+    
+    # Rename for export
+    df.rename(columns={
+        'src_ip': 'Source IP',
+        'dst_ip': 'Destination IP',
+        'dst_port': 'Port',
+        'attack_type': 'Attack Type',
+        'timestamp': 'Time (UTC)'
+    }, inplace=True)
+    
+    # Generate CSV
+    stream = io.StringIO()
+    df.to_csv(stream, index=False)
+    response = StreamingResponse(iter([stream.getvalue()]), media_type="text/csv")
+    response.headers["Content-Disposition"] = "attachment; filename=phalanx_alerts_export.csv"
+    
+    return response
 
 
 @router.get("/alerts/{alert_id}")
@@ -924,8 +940,24 @@ async def stream_real_traffic():
                             'attack_types': {}
                         }
                 else:
-                    # Fallback to simulation when monitor not running
-                    data = await _generate_simulated_traffic()
+                    # Monitor not running - send idle state
+                    data = {
+                        'timestamp': datetime.utcnow().isoformat(),
+                        'packets_per_second': 0,
+                        'bytes_per_second': 0,
+                        'mbps': 0,
+                        'total_flows': 0,
+                        'benign_flows': 0,
+                        'malicious_flows': 0,
+                        'benign_percentage': 0,
+                        'malicious_percentage': 0,
+                        'is_spike': False,
+                        'attack_types': {},
+                        'new_alerts': 0,
+                        'total_alerts': len(alerts_store),
+                        'simulation': False,
+                        'status': 'idle'
+                    }
                 
                 yield f"data: {json.dumps(data)}\n\n"
                 await asyncio.sleep(1)

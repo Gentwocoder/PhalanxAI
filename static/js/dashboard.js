@@ -119,6 +119,14 @@ function initEventListeners() {
     // Generate demo alerts
     document.getElementById('generate-demo-btn').addEventListener('click', generateDemoAlerts);
     
+    // Export alerts
+    const exportBtn = document.getElementById('export-alerts-btn');
+    if (exportBtn) {
+        exportBtn.addEventListener('click', () => {
+            window.location.href = `${API_BASE}/alerts/export`;
+        });
+    }
+    
     // Analyze form
     document.getElementById('analyze-form').addEventListener('submit', analyzeTraffic);
     
@@ -964,13 +972,20 @@ function connectTrafficStream() {
         try {
             const data = JSON.parse(event.data);
             updateTrafficMetrics(data);
-            updateTrafficChart(data);
+            
+            // Only update chart if we have data (not idle)
+            if (data.status !== 'idle') {
+                updateTrafficChart(data);
+            }
             
             // Update status indicator based on whether it's simulation or real
             const statusText = document.getElementById('monitor-status-text');
             const indicator = document.getElementById('live-indicator');
             
-            if (data.simulation) {
+            if (data.status === 'idle') {
+                if (statusText) statusText.textContent = 'READY';
+                indicator?.classList.remove('capturing');
+            } else if (data.simulation) {
                 if (statusText) statusText.textContent = 'SIMULATION';
                 indicator?.classList.remove('capturing');
             } else {
